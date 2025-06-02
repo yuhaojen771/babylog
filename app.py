@@ -1,16 +1,14 @@
 from flask import Flask, request, abort
-from linebot.v3.webhook import WebhookHandler
-from linebot.v3.messaging import (
-    MessagingApiClient, ReplyMessageRequest,
-    TextMessage, FlexMessage, PostbackAction, QuickReply, QuickReplyItem
-)
-from linebot.v3.webhook import (
-    MessageEvent, PostbackEvent, TextMessageContent
-)
-from linebot.v3.exceptions import InvalidSignatureError
 import os
 import sqlite3
-import datetime
+from linebot.v3.webhook import WebhookHandler
+from linebot.v3.messaging import MessagingApiClient, Configuration
+from linebot.v3.models import (
+    TextMessage, TextMessageContent, ReplyMessageRequest,
+    FlexMessage, PostbackAction, MessageAction, URIAction,
+    QuickReply, QuickReplyItem, TemplateMessage, ButtonsTemplate
+)
+
 
 app = Flask(__name__)
 
@@ -102,3 +100,4 @@ def handle_postback(event):
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+pip show line-bot-sdk
