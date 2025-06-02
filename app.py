@@ -4,7 +4,7 @@ from linebot.models import MessageEvent, TextMessage, TextSendMessage, TemplateS
 import os
 import sqlite3
 from datetime import datetime
-
+from linebot.models import PostbackEvent
 app = Flask(__name__)
 
 # 環境變數
@@ -73,9 +73,10 @@ def handle_message(event):
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text="格式錯誤，請用：吃飯內容:08:30 白粥+蛋"))
 
 # Postback 處理
-@handler.add(MessageEvent)
+@handler.add(PostbackEvent)
 def handle_postback(event):
-    if hasattr(event.message, 'text') and event.message.text == 'action=meal':
+    data = event.postback.data
+    if data == "action=meal":
         send_meal_time_options(event.reply_token)
 
 # 發送時間選單
