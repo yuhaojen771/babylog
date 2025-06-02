@@ -1,98 +1,122 @@
-from flask import Flask, request, abort
-from linebot import LineBotApi, WebhookHandler
-from linebot.models import MessageEvent, TextMessage, TextSendMessage, TemplateSendMessage, ButtonsTemplate, PostbackAction
 import os
 import sqlite3
-from datetime import datetime
-from linebot.models import PostbackEvent
-app = Flask(__name__)
+from flask import Flask, request, abort
+from linebot import LineBotApi, WebhookHandler
+from linebot.models import *
+from dotenv import load_dotenv
 
-# 環境變數
-CHANNEL_ACCESS_TOKEN = os.environ.get("CHANNEL_ACCESS_TOKEN")
-CHANNEL_SECRET = os.environ.get("CHANNEL_SECRET")
+# 載入環境變數
+load_dotenv()
+CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
+CHANNEL_SECRET = os.getenv("CHANNEL_SECRET")
+
+if not CHANNEL_ACCESS_TOKEN or not CHANNEL_SECRET:
+    raise Exception("請設定 CHANNEL_ACCESS_TOKEN 與 CHANNEL_SECRET")
 
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-# 建立 SQLite 資料表
-def init_db():
-    conn = sqlite3.connect('baby_log.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS meals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            time TEXT NOT NULL,
-            content TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    conn.close()
+app = Flask(__name__)
 
-init_db()
+# 初始化 SQLite
+conn = sqlite3.connect('baby_log.db')
+c = conn.cursor()
+c.execute('''
+CREATE TABLE IF NOT EXISTS meal_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT,
+    time TEXT,
+    content TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+''')
+conn.commit()
+conn.close()
 
-# 接收 LINE Webhook
+# 記錄用戶目前等待輸入食物內容的狀態
+user_meal_state = {}  # user_id: selected_time
+
+@app.route("/", methods=['GET'])
+def index():
+    return "LINE Bot is running."
+
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers['X-Line-Signature']
     body = request.get_data(as_text=True)
     try:
         handler.handle(body, signature)
-    except:
+    except Exception as e:
+        print("handle error:", e)
         abort(400)
     return 'OK'
 
-# 文字訊息處理
 @handler.add(MessageEvent, message=TextMessage)
-def handle_message(event):
-    user_message = event.message.text
+def handle_text_message(event):
+    user_id = event.source.user_id
+    text = event.message.text.strip()
 
-    if user_message == "我要紀錄":
-        buttons_template = ButtonsTemplate(
-            title="選擇要紀錄的項目",
-            text="請選擇：",
-            actions=[
-                PostbackAction(label="吃飯", data="action=meal")
-            ]
+    if text == "我要紀錄":
+        buttons_template = TemplateSendMessage(
+            alt_text='請選擇紀錄項目',
+            template=ButtonsTemplate(
+                title='請選擇',
+                text='請選擇要紀錄的項目',
+                actions=[
+                    PostbackAction(label='吃飯', data='action=meal'),
+                    PostbackAction(label='睡覺', data='action=sleep'),
+                    PostbackAction(label='便便', data='action=poop')
+                ]
+            )
         )
-        template_message = TemplateSendMessage(
-            alt_text='請選擇要紀錄的項目',
-            template=buttons_template
+        line_bot_api.reply_message(event.reply_token, buttons_template)
+
+    elif user_id in user_meal_state:
+        meal_time = user_meal_state.pop(user_id)
+        content = text
+        conn = sqlite3.connect('baby_log.db')
+        c = conn.cursor()
+        c.execute("INSERT INTO meal_records (user_id, time, content) VALUES (?, ?, ?)",
+                  (user_id, meal_time, content))
+        conn.commit()
+        conn.close()
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=f"吃飯紀錄完成！\n時間：{meal_time}\n內容：{content}")
         )
-        line_bot_api.reply_message(event.reply_token, template_message)
 
-    elif user_message.startswith("吃飯內容:"):
-        # 格式為：吃飯內容:08:30 白粥+蛋
-        try:
-            parts = user_message.replace("吃飯內容:", "").strip().split(" ", 1)
-            time_str = parts[0]
-            content = parts[1]
-            save_meal_record(time_str, content)
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="已紀錄吃飯資料 🍚"))
-        except:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="格式錯誤，請用：吃飯內容:08:30 白粥+蛋"))
-
-# Postback 處理
 @handler.add(PostbackEvent)
 def handle_postback(event):
     data = event.postback.data
+    user_id = event.source.user_id
+
     if data == "action=meal":
-        send_meal_time_options(event.reply_token)
+        actions = []
+        for h in range(8, 22):
+            for m in [0, 30]:
+                time_str = f"{h:02d}:{m:02d}"
+                actions.append(PostbackAction(label=time_str, data=f"meal_time={time_str}"))
 
-# 發送時間選單
-def send_meal_time_options(reply_token):
-    times = [f"{h:02}:{m:02}" for h in range(8, 22) for m in [0, 30]]
-    text = "請輸入吃飯內容，格式為：\n吃飯內容:時間 內容\n\n例如：吃飯內容:08:30 白粥+蛋"
-    line_bot_api.reply_message(reply_token, TextSendMessage(text=text))
+        # 分割為多列 carousel（最多每列 3 個按鈕）
+        columns = [
+            CarouselColumn(text='選擇吃飯時間', actions=actions[i:i+3])
+            for i in range(0, len(actions), 3)
+        ][:5]  # 最多五列（15 個時間）
 
-# 寫入 SQLite
-def save_meal_record(time, content):
-    conn = sqlite3.connect('baby_log.db')
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO meals (time, content) VALUES (?, ?)", (time, content))
-    conn.commit()
-    conn.close()
+        carousel = TemplateSendMessage(
+            alt_text='請選擇吃飯時間',
+            template=CarouselTemplate(columns=columns)
+        )
+        line_bot_api.reply_message(event.reply_token, carousel)
+
+    elif data.startswith("meal_time="):
+        selected_time = data.split("=")[1]
+        user_meal_state[user_id] = selected_time
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=f"請輸入 {selected_time} 吃的內容（例如：稀飯、蛋）")
+        )
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host="0.0.0.0", port=port)
